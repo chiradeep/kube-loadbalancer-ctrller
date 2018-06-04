@@ -1,0 +1,7 @@
+apiVersion: ipam.citrix.com/v1
+kind: Vip
+metadata:
+  name: coffeeip
+spec:
+  description: VIP for the Coffee Service
+  service: coffee-service

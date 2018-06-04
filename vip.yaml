@@ -1,0 +1,8 @@
+apiVersion: ipam.citrix.com/v1
+kind: Vip
+metadata:
+  name: teavip
+spec:
+  description: VIP for the Tea Service
+  ipaddress: 10.20.30.40
+  service: tea-service
