@@ -1,0 +1,7 @@
+apiVersion: ipam.citrix.com/v1
+kind: Vip
+metadata:
+  name: applejuiceip
+spec:
+  description: VIP for the Apple Juice Service
+  service: aj-service
