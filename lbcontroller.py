@@ -14,8 +14,12 @@
 
 from kubernetes import client, config, watch
 
+GROUP = "ipam.citrix.com"
+VERSION = "v1"
+PLURAL = "vips"
+NAMESPACE = "default"
 
-def watch_for_services(namespaces):
+def watch_for_services(namespaces, service_handler):
     # load config from default location.
     config.load_kube_config()
 
@@ -26,7 +30,32 @@ def watch_for_services(namespaces):
     for event in  w.stream(v1.list_service_for_all_namespaces): 
         if event['object'].metadata.namespace in namespaces:
             print("Event: %s %s %s/%s" % (event['type'],event['object'].kind, event['object'].metadata.namespace, event['object'].metadata.name))
+            service_handler(event['object'])
 
+
+def service_handler(service_obj):
+    namespace = service_obj.metadata.namespace
+    name= service_obj.metadata.name
+    spec = service_obj.spec
+    if spec.type == 'LoadBalancer':
+        print ("service_handler: handling type LoadBalancer for service %s/%s" % (namespace, name))
+        create_vip_crd(service_obj)
+        print ("service_handler: created VIP crd for service %s/%s" % (namespace, name))
+
+
+def create_vip_crd(service_obj):
+    crds = client.CustomObjectsApi()
+    name = service_obj.metadata.name
+    namespace = service_obj.metadata.namespace
+    body = { 'apiVersion': 'ipam.citrix.com/v1',
+             'kind': 'Vip',
+             'metadata': {'name': '%s-vip' % name},
+             'description': 'VIP for %s service' % name,
+             'spec' : {'description': 'VIP for the %s Service' % name,
+                       'service': name}
+           }
+    #TODO: check if it already exists
+    response = crds.create_namespaced_custom_object(GROUP, VERSION, namespace, PLURAL, body)
 
 if __name__ == '__main__':
-    watch_for_services([u'default'])
+    watch_for_services([u'default'], service_handler)
