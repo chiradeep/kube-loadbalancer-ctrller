@@ -88,8 +88,9 @@ class CitrixIpamController(object):
         self.handle_added(ipam_obj)
 
     def handle_deleted(self, ipam_obj):
-        print("handle_deleted: not sure what to do")
-        # TODO
+        vip = ipam_obj['spec'].get('ipaddress')
+        print("handle_deleted: adding back vip %s to pool" % vip)
+        self.unallocated_vips.add(vip)
 
     def handle_error(self, ipam_obj):
         print("handle_error: not sure what to do")
