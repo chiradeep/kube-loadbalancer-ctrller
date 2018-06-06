@@ -21,16 +21,25 @@ import ipaddress
 GROUP = "ipam.citrix.com"
 VERSION = "v1"
 PLURAL = "vips"
-NAMESPACE = 'default'
 
 class CitrixIpamController(object):
-    def __init__(self):
+
+    def __init__(self, namespaces=[u'default']):
         self.vip_cidrs = json.loads(os.environ.get('VIP_RANGE'))
         config.load_kube_config()
-
+        self.namespaces = namespaces
         self.unallocated_vips = set()
         self.init_unallocated_vips(self.vip_cidrs)
-        self.watch_for_ipam_create_request([u'default'], self.ipam_handler)
+        self._stop = False
+        self.handlers = {'ADDED': self.handle_added,
+                         'MODIFIED': self.handle_modified,
+                         'DELETED': self.handle_deleted}
+
+    def start(self):
+        self.watch_for_ipam_create_request(self.namespaces, self.ipam_handler)
+
+    def stop(self):
+        self._stop = True
 
     def watch_for_ipam_create_request(self, namespaces, ipam_handler):
         crds = client.CustomObjectsApi()
@@ -42,8 +51,10 @@ class CitrixIpamController(object):
             if event['object']['metadata']['namespace'] in namespaces:
                 print("Event: %s %s %s/%s" % (event['type'], event['object']['kind'],
                                               event['object']['metadata']['namespace'], event['object']['metadata']['name']))
-                ipam_handler(event['object']['metadata']['namespace'],
+                ipam_handler(event['type'], event['object']['metadata']['namespace'],
                              event['object']['metadata']['name'], event['object']['spec'])
+                if self._stop:
+                    break
 
     def update_ipam_crd(self, namespace, name, service, ip):
         crds = client.CustomObjectsApi()
@@ -53,18 +64,32 @@ class CitrixIpamController(object):
         crds.patch_namespaced_custom_object(
             GROUP, VERSION, namespace, PLURAL, name, body)
 
-    def ipam_handler(self, namespace, name, ipam_spec):
+    def handle_added(self, namespace, name, service, ipam_spec):
+        service = ipam_spec['service']
+        vip = ipam_spec.get('ipaddress')
+        if vip is None:
+            print("handle_added: VIP is none, will allocate a new one")
+            if len(self.unallocated_vips) > 0:
+                ip = self.unallocated_vips.pop()
+                print("handle_added: Allocated VIP %s" % str(ip))
+                self.update_ipam_crd(namespace, name, service, str(ip))
+        else:
+            print("handle_added: VIP is already allocated, no action")
+
+    def handle_modified(self, namespace, name, service, ipam_spec):
+        print("handle_modified: calling handle_added")
+        self.handle_added(namespace, name, service, ipam_spec)
+
+    def handle_deleted(self, namespace, name, service, ipam_spec):
+        print("handle_deleted: not sure what to do")
+        # TODO
+        pass
+
+    def ipam_handler(self, operation, namespace, name, ipam_spec):
         service = ipam_spec['service']
         vip = ipam_spec.get('ipaddress')
         print("IPAM request: service: %s vip: %s" % (service, vip))
-        if vip is None:
-            print("IPAM request: VIP is none, will allocate a new one")
-            if len(self.unallocated_vips) > 0:
-                ip = self.unallocated_vips.pop()
-                print("IPAM request: Allocated VIP %s" % str(ip))
-                self.update_ipam_crd(namespace, name, service, str(ip))
-        else:
-            print("IPAM request: VIP is already allocated, no action")
+        self.handlers[operation](self, namespace, name, ipam_spec)
 
     def init_unallocated_vips(self, cidrs):
         for cidr in cidrs:
@@ -76,4 +101,5 @@ class CitrixIpamController(object):
 if __name__ == '__main__':
     print("VIP range configured as: %s" %
           json.loads(os.environ.get('VIP_RANGE')))
-    ctrller = CitrixIpamController()
+    ctrller = CitrixIpamController(namespaces=[u'default'])
+    ctrller.start()
