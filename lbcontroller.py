@@ -14,6 +14,7 @@
 
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
+import signal
 import threading
 
 GROUP = "ipam.citrix.com"
@@ -25,14 +26,36 @@ VIP_ANNOTATION_KEY = 'com.citrix.vip'
 class CitrixLoadBalancerController(object):
     def __init__(self):
         config.load_kube_config()
+        signal.signal(signal.SIGINT, self.signal_handler)
+
         self.t1 = threading.Thread(target=self.watch_for_services,
-                            args=([u'default'], self.service_handler))
+                                   args=([u'default'], self.service_handler))
         self.t2 = threading.Thread(target=self.watch_for_ipam_create_request,
-                            args=([u'default'], self.ipam_handler))
+                                   args=([u'default'], self.ipam_handler))
+        self._stop = False
+        self.svc_handlers = {'ADDED': self.handle_svc_added,
+                             'MODIFIED': self.handle_svc_modified,
+                             'DELETED': self.handle_svc_deleted,
+                             'ERROR': self.handle_svc_error}
+
+        self.ipam_handlers = {'ADDED': self.handle_ipam_added,
+                             'MODIFIED': self.handle_ipam_modified,
+                             'DELETED': self.handle_ipam_deleted,
+                             'ERROR': self.handle_ipam_error}
+        self.watch = watch.Watch()
+
+    def start(self):
+        self._stop = False
         self.t1.start()
         self.t2.start()
-    
+
+    def stop(self):
+        self._stop = True
+        self.t1.join()
+        self.t2.join()
+
     def __del__(self):
+        self._stop = True
         self.t1.join()
         self.t2.join()
 
@@ -41,25 +64,46 @@ class CitrixLoadBalancerController(object):
         crds = client.CustomObjectsApi()
         resource_version = ""
         stream = watch.Watch().stream(crds.list_cluster_custom_object,
-                                    GROUP, VERSION, PLURAL,
-                                    resource_version=resource_version)
+                                      GROUP, VERSION, PLURAL,
+                                      resource_version=resource_version)
         for event in stream:
             if event['object']['metadata']['namespace'] in namespaces:
                 print("Event: %s %s %s/%s" % (event['type'], event['object']['kind'],
-                                            event['object']['metadata']['namespace'], event['object']['metadata']['name']))
-                ipam_handler(event['object']['metadata']['namespace'],
-                         event['object']['metadata']['name'], event['object']['spec'])
+                                              event['object']['metadata']['namespace'], event['object']['metadata']['name']))
+                ipam_handler(event['type'], event['object']['metadata']['namespace'],
+                             event['object']['metadata']['name'], event['object']['spec'])
+                if self._stop:
+                    break
 
-
-    def ipam_handler(self, namespace, name, ipam_spec):
-        service = ipam_spec['service']
-        vip = ipam_spec.get('ipaddress')
-        print("IPAM request: service: %s vip: %s" % (service, vip))
+    def handle_ipam_added(self, namespace, name, ipam_obj):
+        service = ipam_obj['service']
+        vip = ipam_obj.get('ipaddress')
+        print("handle_ipam_added: service: %s vip: %s" % (service, vip))
         if vip is None:
-            print("IPAM request: VIP is none, nothing to do")
+            print("handle_ipam_added: VIP is none, nothing to do")
         else:
-            print("IPAM request: VIP is  allocated, will update service VIP annotation")
+            print("handle_ipam_added: VIP is  allocated, will update service VIP annotation")
             self.update_service_vip_annotation(namespace, name, vip)
+
+    def handle_ipam_deleted(self, namespace, name, ipam_obj):
+        print("handle_ipam_deleted: not sure what to do")
+
+    
+    def handle_ipam_modified(self, namespace, name, ipam_obj):
+        print("handle_ipam_modified: calling handle_ipam_added")
+        self.handle_ipam_added(namespace, name, ipam_obj)
+
+
+    def handle_ipam_error(self, namespace, name, ipam_obj):
+        print("handle_ipam_error: not sure what to do")
+        # TODO
+
+
+    def ipam_handler(self, operation, namespace, name, ipam_obj):
+        service = ipam_obj['service']
+        vip = ipam_obj.get('ipaddress')
+        print("IPAM request: operation: %s service: %s vip: %s" % (operation, service, vip))
+        self.ipam_handlers[operation](namespace, name, ipam_obj)
 
 
     def watch_for_services(self, namespaces, service_handler):
@@ -70,31 +114,47 @@ class CitrixLoadBalancerController(object):
         for event in w.stream(v1.list_service_for_all_namespaces):
             if event['object'].metadata.namespace in namespaces:
                 print("Event: %s %s %s/%s" % (event['type'], event['object'].kind,
-                                            event['object'].metadata.namespace, event['object'].metadata.name))
-                service_handler(event['object'])
+                                              event['object'].metadata.namespace, event['object'].metadata.name))
+                service_handler(event['type'], event['object'])
 
 
-    def service_handler(self, service_obj):
+    def handle_svc_added(self, service_obj):
         namespace = service_obj.metadata.namespace
         name = service_obj.metadata.name
         spec = service_obj.spec
         if spec.type == 'LoadBalancer':
-            print ("service_handler: handling type LoadBalancer for service %s/%s" %
-                (namespace, name))
+            print ("handle_svc_added: handling type LoadBalancer for service %s/%s" %
+                   (namespace, name))
             lb_annotation = None
             if service_obj.metadata.annotations != None:
                 lb_annotation = service_obj.metadata.annotations.get(
                     VIP_ANNOTATION_KEY)
             if lb_annotation is None:
-                print ("service_handler: No VIP annotation: creating/reading VIP crd for service %s/%s" %
-                    (namespace, name))
+                print ("handle_svc_added: No VIP annotation: creating/reading VIP crd for service %s/%s" %
+                       (namespace, name))
                 self.read_or_create_vip_crd(service_obj)
-                print ("service_handler: Read/created VIP crd for service %s/%s" %
-                    (namespace, name))
+                print ("handle_svc_added: Read/created VIP crd for service %s/%s" %
+                       (namespace, name))
             else:
-                print ("service_handler:  vip annotation alreadys set for service %s/%s: %s" %
-                    (namespace, name, lb_annotation))
+                print ("handle_svc_added:  vip annotation alreadys set for service %s/%s: %s" %
+                       (namespace, name, lb_annotation))
 
+    def handle_svc_deleted(self, service_obj):
+        print ("handle_svc_deleted:  not sure what to do!")
+        # TODO
+
+    def handle_svc_modified(self, service_obj):
+        print ("handle_svc_modified  calling handle_svc_added")
+        self.handle_svc_added(service_obj)
+
+
+    def handle_svc_error(self, service_obj):
+        print ("handle_svc_error:  not sure what to do!")
+        # TODO
+
+    def service_handler(self, operation, service_obj):
+        print("service_handler: operation %s, service: %s" % (operation, service_obj.metadata.name))
+        self.svc_handlers[operation](service_obj)
 
     def annotate_service(self, namespace, name, service_obj, ipaddr):
         v1 = client.CoreV1Api()
@@ -106,7 +166,6 @@ class CitrixLoadBalancerController(object):
         except ApiException as e:
             print("Exception when calling replace_namespaced_service: %s" % e)
 
-
     def update_service_vip_annotation(self, namespace, name, ipaddr):
         v1 = client.CoreV1Api()
         try:
@@ -116,17 +175,17 @@ class CitrixLoadBalancerController(object):
                 lb_annotation = service_obj.metadata.annotations.get(
                     VIP_ANNOTATION_KEY)
             if lb_annotation is None:
-                print ("update_service_vip_annotation: No vip annotation on service: updating annotation for service %s/%s" % (namespace, name))
+                print (
+                    "update_service_vip_annotation: No vip annotation on service: updating annotation for service %s/%s" % (namespace, name))
                 self.annotate_service(namespace, name, service_obj, ipaddr)
                 print ("update_service_vip_annotation: Updated vip annotation for service %s/%s" %
-                    (namespace, name))
+                       (namespace, name))
             else:
                 print ("update_service_vip_annotation:  vip annotation alreadys set for service %s/%s: %s" %
-                    (namespace, name, lb_annotation))
+                       (namespace, name, lb_annotation))
         except ApiException as e:
             print("update_service_vip_annotation : no service of name %s/%s found, exception=%s" %
-                (namespace, name, e))
-
+                  (namespace, name, e))
 
     def read_or_create_vip_crd(self, service_obj):
         crds = client.CustomObjectsApi()
@@ -137,7 +196,7 @@ class CitrixLoadBalancerController(object):
                 'metadata': {'name': '%s' % name},
                 'description': 'VIP for %s service' % name,
                 'spec': {'description': 'VIP for the %s Service' % name,
-                        'service': name}
+                         'service': name}
                 }
 
         try:
@@ -147,18 +206,28 @@ class CitrixLoadBalancerController(object):
             ipaddr = response['spec'].get('ipaddress')
             if ipaddr is None:
                 print ("create_vip_cidr:  VIP CRD already created for service %s/%s but no IP address yet" %
-                    (namespace, name))
+                       (namespace, name))
             else:
                 print ("create_vip_cidr:  VIP %s already created for service %s/%s" %
-                    (ipaddr, namespace, name))
+                       (ipaddr, namespace, name))
                 # the vip crd may exist but not in the service object
                 self.update_service_vip_annotation(namespace, name, ipaddr)
         except ApiException as e:
             print ("create_vip_cidr:  VIP not already created for service %s/%s, exception=%s" %
-                (namespace, name, e))
+                   (namespace, name, e))
             response = crds.create_namespaced_custom_object(
                 GROUP, VERSION, namespace, PLURAL, body)
 
 
+    def signal_handler(self, signum, stack):
+        print("Received signal %d " % signum)
+
+        if signum == signal.SIGINT:
+            print("Received signal %d, exiting" % signum)
+            self.stop()
+
+
+
 if __name__ == '__main__':
     ctrller = CitrixLoadBalancerController()
+    ctrller.start()

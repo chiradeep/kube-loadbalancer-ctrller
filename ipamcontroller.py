@@ -13,14 +13,16 @@
 # limitations under the License.
 
 from kubernetes import client, config, watch
-import os
-import json
 import ipaddress
+import json
+import os
+import signal
 
 
 GROUP = "ipam.citrix.com"
 VERSION = "v1"
 PLURAL = "vips"
+
 
 class CitrixIpamController(object):
 
@@ -33,30 +35,33 @@ class CitrixIpamController(object):
         self._stop = False
         self.handlers = {'ADDED': self.handle_added,
                          'MODIFIED': self.handle_modified,
-                         'DELETED': self.handle_deleted}
+                         'DELETED': self.handle_deleted,
+                         'ERROR': self.handle_error}
+        self.watch = watch.Watch()
+        signal.signal(signal.SIGINT, self.signal_handler)
 
     def start(self):
         self.watch_for_ipam_create_request(self.namespaces, self.ipam_handler)
 
     def stop(self):
         self._stop = True
+        self.watch.stop()
 
     def watch_for_ipam_create_request(self, namespaces, ipam_handler):
         crds = client.CustomObjectsApi()
         resource_version = ""
-        stream = watch.Watch().stream(crds.list_cluster_custom_object,
-                                      GROUP, VERSION, PLURAL,
-                                      resource_version=resource_version)
+        stream = self.watch.stream(crds.list_cluster_custom_object,
+                                   GROUP, VERSION, PLURAL,
+                                   resource_version=resource_version)
         for event in stream:
             if event['object']['metadata']['namespace'] in namespaces:
                 print("Event: %s %s %s/%s" % (event['type'], event['object']['kind'],
                                               event['object']['metadata']['namespace'], event['object']['metadata']['name']))
-                ipam_handler(event['type'], event['object']['metadata']['namespace'],
-                             event['object']['metadata']['name'], event['object']['spec'])
+                ipam_handler(event['type'], event['object'])
                 if self._stop:
                     break
 
-    def update_ipam_crd(self, namespace, name, service, ip):
+    def update_ipam_crd(self, namespace, name, ip):
         crds = client.CustomObjectsApi()
         body = {'spec': {'ipaddress': ip}}
         print("IPAM request: Patching VIP CRD %s/%s with ip %s" %
@@ -64,38 +69,48 @@ class CitrixIpamController(object):
         crds.patch_namespaced_custom_object(
             GROUP, VERSION, namespace, PLURAL, name, body)
 
-    def handle_added(self, namespace, name, service, ipam_spec):
-        service = ipam_spec['service']
-        vip = ipam_spec.get('ipaddress')
+    def handle_added(self, ipam_obj):
+        service = ipam_obj['spec']['service']
+        vip = ipam_obj['spec'].get('ipaddress')
+        namespace = ipam_obj['metadata']['namespace']
+        name = service
         if vip is None:
             print("handle_added: VIP is none, will allocate a new one")
             if len(self.unallocated_vips) > 0:
                 ip = self.unallocated_vips.pop()
                 print("handle_added: Allocated VIP %s" % str(ip))
-                self.update_ipam_crd(namespace, name, service, str(ip))
+                self.update_ipam_crd(namespace, name, str(ip))
         else:
             print("handle_added: VIP is already allocated, no action")
 
-    def handle_modified(self, namespace, name, service, ipam_spec):
+    def handle_modified(self, ipam_obj):
         print("handle_modified: calling handle_added")
-        self.handle_added(namespace, name, service, ipam_spec)
+        self.handle_added(ipam_obj)
 
-    def handle_deleted(self, namespace, name, service, ipam_spec):
+    def handle_deleted(self, ipam_obj):
         print("handle_deleted: not sure what to do")
         # TODO
-        pass
 
-    def ipam_handler(self, operation, namespace, name, ipam_spec):
-        service = ipam_spec['service']
-        vip = ipam_spec.get('ipaddress')
+    def handle_error(self, ipam_obj):
+        print("handle_error: not sure what to do")
+        # TODO
+
+    def ipam_handler(self, operation,  ipam_obj):
+        service = ipam_obj['spec']['service']
+        vip = ipam_obj['spec'].get('ipaddress')
         print("IPAM request: service: %s vip: %s" % (service, vip))
-        self.handlers[operation](self, namespace, name, ipam_spec)
+        self.handlers[operation](ipam_obj)
 
     def init_unallocated_vips(self, cidrs):
         for cidr in cidrs:
             for ip in ipaddress.ip_network(cidr).hosts():
                 self.unallocated_vips.add(ip)
         # TODO: iterate over existing Vip CRD objects and delete them from the set of vips
+
+    def signal_handler(self, signum, stack):
+        if signum == signal.SIGINT:
+            print("Received signal %d, exiting" % signum)
+            self.stop()
 
 
 if __name__ == '__main__':
