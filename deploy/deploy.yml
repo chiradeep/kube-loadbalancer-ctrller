@@ -1,0 +1,19 @@
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: netscaler-lbc
+  labels:
+    run: netscaler-lbc
+  namespace: kube-system
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: netscaler-lbc
+    spec:
+      serviceAccountName: netscaler-lbc
+      containers:
+      - name: netscaler-lbc
+        image: localhost:5000/citrix-lbcontroller:latest
