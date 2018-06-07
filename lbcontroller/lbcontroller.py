@@ -24,17 +24,18 @@ VIP_ANNOTATION_KEY = 'com.citrix.vip'
 
 
 class CitrixLoadBalancerController(object):
-    def __init__(self):
+    def __init__(self, namespaces=[u'default']):
         try:
             config.load_kube_config()
         except:
             config.load_incluster_config()
+        self.namespaces = namespaces
         signal.signal(signal.SIGINT, self.signal_handler)
 
         self.t1 = threading.Thread(target=self.watch_for_services,
-                                   args=([u'default'], self.service_handler))
-        self.t2 = threading.Thread(target=self.watch_for_ipam_create_request,
-                                   args=([u'default'], self.ipam_handler))
+                                   args=(self.namespaces, self.service_handler))
+        self.t2 = threading.Thread(target=self.watch_for_ipam_requests,
+                                   args=(self.namespaces, self.ipam_handler))
         self._stop = False
         self.svc_handlers = {'ADDED': self.handle_svc_added,
                              'MODIFIED': self.handle_svc_modified,
@@ -45,7 +46,6 @@ class CitrixLoadBalancerController(object):
                               'MODIFIED': self.handle_ipam_modified,
                               'DELETED': self.handle_ipam_deleted,
                               'ERROR': self.handle_ipam_error}
-        self.watch = watch.Watch()
 
     def start(self):
         self._stop = False
@@ -62,7 +62,7 @@ class CitrixLoadBalancerController(object):
         self.t1.join()
         self.t2.join()
 
-    def watch_for_ipam_create_request(self, namespaces, ipam_handler):
+    def watch_for_ipam_requests(self, namespaces, ipam_handler):
         # load config from default location.
         crds = client.CustomObjectsApi()
         resource_version = ""

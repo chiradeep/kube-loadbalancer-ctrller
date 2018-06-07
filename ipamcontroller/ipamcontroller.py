@@ -49,13 +49,14 @@ class CitrixIpamController(object):
         signal.signal(signal.SIGINT, self.signal_handler)
 
     def start(self):
-        self.watch_for_ipam_create_request(self.namespaces, self.ipam_handler)
+        self._stop = False
+        self.watch_for_ipam_requests(self.namespaces, self.ipam_handler)
 
     def stop(self):
         self._stop = True
         self.watch.stop()
 
-    def watch_for_ipam_create_request(self, namespaces, ipam_handler):
+    def watch_for_ipam_requests(self, namespaces, ipam_handler):
         crds = client.CustomObjectsApi()
         resource_version = ""
         stream = self.watch.stream(crds.list_cluster_custom_object,
