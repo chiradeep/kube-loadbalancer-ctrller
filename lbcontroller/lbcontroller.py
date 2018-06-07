@@ -25,7 +25,10 @@ VIP_ANNOTATION_KEY = 'com.citrix.vip'
 
 class CitrixLoadBalancerController(object):
     def __init__(self):
-        config.load_kube_config()
+        try:
+            config.load_kube_config()
+        except:
+            config.load_incluster_config()
         signal.signal(signal.SIGINT, self.signal_handler)
 
         self.t1 = threading.Thread(target=self.watch_for_services,

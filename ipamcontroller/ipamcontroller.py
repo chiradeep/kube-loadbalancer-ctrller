@@ -27,8 +27,16 @@ PLURAL = "vips"
 class CitrixIpamController(object):
 
     def __init__(self, namespaces=[u'default']):
-        self.vip_cidrs = json.loads(os.environ.get('VIP_RANGE'))
-        config.load_kube_config()
+        vip_range = os.environ.get('VIP_RANGE')
+        if vip_range is None:
+            print("No VIP_RANGE env variable found, assuming 172.31.254.0/24")
+            vip_range = '["172.31.254.0/24"]'
+        print("VIP range configured as: %s" % vip_range)
+        self.vip_cidrs = json.loads(vip_range)
+        try:
+            config.load_kube_config()
+        except:
+            config.load_incluster_config()
         self.namespaces = namespaces
         self.unallocated_vips = set()
         self.init_unallocated_vips(self.vip_cidrs)
@@ -115,7 +123,5 @@ class CitrixIpamController(object):
 
 
 if __name__ == '__main__':
-    print("VIP range configured as: %s" %
-          json.loads(os.environ.get('VIP_RANGE')))
     ctrller = CitrixIpamController(namespaces=[u'default'])
     ctrller.start()
