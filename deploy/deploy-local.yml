@@ -1,0 +1,27 @@
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: citrix-controllers
+  labels:
+    run1: netscaler-lbc
+    run2: netscaler-ipam
+  namespace: kube-system
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app1: netscaler-lbc
+        app2: netscaler-ipam
+    spec:
+      serviceAccountName: netscaler-lbc
+      containers:
+      - name: netscaler-lbc
+        image: localhost:5000/citrix-lbcontroller:latest
+      - name: netscaler-ipam
+        image: localhost:5000/citrix-ipamcontroller:latest
+        env:
+        - name: "VIP_RANGE"
+          value: '["10.99.98.0/24"]'
+
