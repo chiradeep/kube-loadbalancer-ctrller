@@ -93,6 +93,9 @@ class CitrixLoadBalancerController(object):
         print("handle_ipam_deleted: not sure what to do")
         # TODO: remove lb config from NetScaler?, or some way of preventing this?
         # for now remove service annotation
+        ipaddr = ipam_obj.get('ipaddress')
+        if ipaddr != None:
+            self.remove_service_vip_annotation(namespace, name, ipaddr)
 
     def handle_ipam_modified(self, namespace, name, ipam_obj):
         print("handle_ipam_modified: calling handle_ipam_added")
@@ -213,7 +216,7 @@ class CitrixLoadBalancerController(object):
                     "remove_service_vip_annotation: No vip annotation on service: %s/%s" % (namespace, name))
                 return
             else:
-                self.unannotate_service(namespace, name, service_obj)       
+                self.unannotate_service(namespace, name, service_obj)
                 print ("remove_service_vip_annotation:  removed vip annotation  for service %s/%s: %s" %
                        (namespace, name, lb_annotation))
         except ApiException as e:
